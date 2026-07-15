@@ -1,0 +1,24 @@
+{
+  "name": "valet-parking-backend-mysql",
+  "version": "1.0.0",
+  "description": "Backend for Valet Parking App (Node.js, Express, MySQL, Sequelize)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "keywords": ["valet", "parking", "backend", "express", "mysql", "sequelize"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "mysql2": "^3.0.0",
+    "sequelize": "^6.32.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}

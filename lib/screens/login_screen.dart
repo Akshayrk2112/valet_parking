@@ -31,21 +31,6 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
-  // Demo/test credentials for each role
-  final Map<String, Map<String, String>> _validCredentials = {
-    'admin': {
-      'email': 'admin@valet.com',
-      'password': 'admin123',
-    },
-    'driver': {
-      'email': 'driver@valet.com',
-      'password': 'driver123',
-    },
-    'security': {
-      'email': 'security@valet.com',
-      'password': 'security123',
-    },
-  };
 
   @override
   void dispose() {
@@ -366,38 +351,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         : null,
                   ),
                   const SizedBox(height: 24),
-                  // Test Credentials Info
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.shade200),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Test Credentials:',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue.shade600,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Email: ${_validCredentials[_selectedRole]?['email'] ?? 'customer@example.com'}',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                        Text(
-                          'Password: ${_validCredentials[_selectedRole]?['password'] ?? 'password'}',
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 32),
                   // Login Button
                   SizedBox(
                     width: double.infinity,
@@ -456,9 +409,6 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String _getHintEmail() {
-    if (_validCredentials.containsKey(_selectedRole)) {
-      return _validCredentials[_selectedRole]!['email']!;
-    }
     return 'Enter your email';
   }
 

@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import '../models/parking_models.dart';
 import '../widgets/custom_drawer.dart';
 import 'dart:math';
+import 'package:url_launcher/url_launcher.dart';
 
 class FullMapScreen extends StatefulWidget {
   final LatLng initialLocation;
@@ -177,6 +178,40 @@ class _FullMapScreenState extends State<FullMapScreen>
 
     _drawRoute();
     _animateCameraToMarkers();
+  }
+
+  Future<void> _openNavigationToSelected() async {
+    if (_selectedLocation == null) return;
+    final destLat = _selectedLocation!.latitude;
+    final destLng = _selectedLocation!.longitude;
+    final origin = _currentLocation != null
+        ? '&origin=${_currentLocation!.latitude},${_currentLocation!.longitude}'
+        : '';
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=$destLat,$destLng$origin&travelmode=driving',
+    );
+
+    try {
+      final launched =
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open navigation app'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open navigation app'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   void _onParkingSpaceTapped(ParkingSpaceStatus space) {
@@ -719,14 +754,10 @@ class _FullMapScreenState extends State<FullMapScreen>
                           Expanded(
                             child: ElevatedButton.icon(
                               onPressed: () {
-                                Navigator.pop(context);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                        'Navigating to $_selectedMarkerTitle'),
-                                    duration: const Duration(seconds: 2),
-                                  ),
-                                );
+                                setState(() {
+                                  _showRouteInfo = false;
+                                });
+                                _openNavigationToSelected();
                               },
                               icon: const Icon(Icons.directions),
                               label: const Text('Navigate'),

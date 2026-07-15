@@ -21,6 +21,7 @@ class AdminDriversScreen extends StatefulWidget {
 class _AdminDriversScreenState extends State<AdminDriversScreen> {
   List<Map<String, dynamic>> _drivers = [];
   bool _isLoading = false;
+  int? _deletingDriverId;
   String? _errorMessage;
 
   @override
@@ -112,8 +113,116 @@ class _AdminDriversScreenState extends State<AdminDriversScreen> {
     return Colors.red.shade700;
   }
 
+  Future<void> _confirmDeleteDriver(
+    Map<String, dynamic> driver, {
+    bool closeDetailsSheet = false,
+  }) async {
+    final driverId = int.tryParse(driver['user_id']?.toString() ?? '');
+    if (driverId == null) return;
+
+    final name = driver['name']?.toString() ?? 'this driver';
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Driver'),
+        content: Text(
+          'Delete $name? This removes the driver login and driver profile. Drivers with active bookings cannot be deleted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete),
+            label: const Text('Delete'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red.shade700,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete != true) return;
+    await _deleteDriver(driverId, name, closeDetailsSheet: closeDetailsSheet);
+  }
+
+  Future<void> _deleteDriver(
+    int driverId,
+    String name, {
+    bool closeDetailsSheet = false,
+  }) async {
+    final jwtToken = AuthTokenStore().token;
+    if (jwtToken == null || jwtToken.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Missing login session token'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _deletingDriverId = driverId;
+    });
+
+    try {
+      final response = await http.delete(
+        Uri.parse('$apiBase/api/drivers/admin/$driverId'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $jwtToken',
+        },
+      );
+
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        setState(() {
+          _drivers.removeWhere(
+            (driver) => driver['user_id']?.toString() == driverId.toString(),
+          );
+          _deletingDriverId = null;
+        });
+        if (closeDetailsSheet && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$name deleted')),
+        );
+        return;
+      }
+
+      setState(() {
+        _deletingDriverId = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_extractErrorMessage(response)),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deletingDriverId = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to delete driver: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   void _showDriverDetails(Map<String, dynamic> driver) {
     final status = (driver['status'] ?? 'inactive').toString();
+    final driverId = int.tryParse(driver['user_id']?.toString() ?? '');
+    final isDeleting = driverId != null && _deletingDriverId == driverId;
 
     showModalBottomSheet(
       context: context,
@@ -181,6 +290,36 @@ class _AdminDriversScreenState extends State<AdminDriversScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: isDeleting
+                        ? null
+                        : () => _confirmDeleteDriver(
+                              driver,
+                              closeDetailsSheet: true,
+                            ),
+                    icon: isDeleting
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.red.shade700,
+                              ),
+                            ),
+                          )
+                        : const Icon(Icons.delete_outline),
+                    label: Text(isDeleting ? 'Deleting...' : 'Delete Driver'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red.shade700,
+                      side: BorderSide(color: Colors.red.shade300),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -224,6 +363,8 @@ class _AdminDriversScreenState extends State<AdminDriversScreen> {
 
   Widget _buildDriverCard(Map<String, dynamic> driver) {
     final name = driver['name']?.toString() ?? 'Unknown';
+    final driverId = int.tryParse(driver['user_id']?.toString() ?? '');
+    final isDeleting = driverId != null && _deletingDriverId == driverId;
     final status = (driver['status'] ?? 'inactive').toString();
     final statusLabel = _prettyStatus(status);
     final statusColor = _statusColor(status);
@@ -312,6 +453,50 @@ class _AdminDriversScreenState extends State<AdminDriversScreen> {
                 ),
               ),
             ),
+            const SizedBox(width: 4),
+            isDeleting
+                ? SizedBox(
+                    width: 36,
+                    height: 36,
+                    child: Center(
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.red.shade700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                : PopupMenuButton<String>(
+                    tooltip: 'Driver actions',
+                    onSelected: (value) {
+                      if (value == 'delete') {
+                        _confirmDeleteDriver(driver);
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem<String>(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.delete_outline,
+                              color: Colors.red.shade700,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Delete driver',
+                              style: TextStyle(color: Colors.red.shade700),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
           ],
         ),
       ),

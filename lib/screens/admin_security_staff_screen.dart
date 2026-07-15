@@ -21,7 +21,7 @@ class AdminSecurityStaffScreen extends StatefulWidget {
 
 class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
   List<Map<String, dynamic>> _securityStaff = [];
-  List<String> _parkingLocations = [];
+  List<Map<String, dynamic>> _parkingLocations = [];
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -112,11 +112,24 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
 
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     final locations = (data['locations'] as List<dynamic>? ?? [])
-        .map((item) => (item as Map<String, dynamic>)['name']?.toString() ?? '')
-        .where((name) => name.trim().isNotEmpty)
-        .toSet()
+        .map((item) {
+          final loc = Map<String, dynamic>.from(item as Map);
+          final idRaw = loc['id'];
+          final id = idRaw is int
+              ? idRaw
+              : int.tryParse(idRaw?.toString() ?? '');
+          if (id == null) return null;
+          return {
+            'id': id,
+            'name': loc['name']?.toString() ?? '',
+          };
+        })
+        .whereType<Map<String, dynamic>>()
+        .where((loc) => (loc['name'] ?? '').toString().trim().isNotEmpty)
         .toList();
-    locations.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    locations.sort((a, b) =>
+        a['name'].toString().toLowerCase().compareTo(
+            b['name'].toString().toLowerCase()));
 
     if (!mounted) return;
     setState(() {
@@ -126,7 +139,7 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
 
   Future<void> _updateAssignedParking(
     int userId,
-    String? parkingLocation,
+    int? parkingLocationId,
   ) async {
     final jwtToken = AuthTokenStore().token;
     final response = await http.patch(
@@ -137,7 +150,7 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
           'Authorization': 'Bearer $jwtToken',
       },
       body: jsonEncode({
-        'parking_location': parkingLocation,
+        'parking_location': parkingLocationId,
       }),
     );
 
@@ -152,20 +165,44 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
       return;
     }
 
+    String? assignedName;
+    int? assignedId = parkingLocationId;
+    try {
+      final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+      final assignment = decoded['assignment'];
+      assignedName = decoded['parking_location_name']?.toString();
+      if (assignment is Map) {
+        final idRaw = assignment['parking_location_id'];
+        assignedId = idRaw is int ? idRaw : int.tryParse(idRaw?.toString() ?? '');
+        if (assignedName == null || assignedName!.trim().isEmpty) {
+          assignedName = assignment['parking_location']?.toString();
+        }
+      }
+    } catch (_) {}
+
+    assignedName ??= _parkingLocations
+        .firstWhere(
+          (loc) => loc['id'] == assignedId,
+          orElse: () => {},
+        )['name']
+        ?.toString();
+
     setState(() {
       final index =
           _securityStaff.indexWhere((staff) => staff['user_id'] == userId);
       if (index != -1) {
-        _securityStaff[index]['parking_location'] = parkingLocation;
+        _securityStaff[index]['parking_location_id'] = assignedId;
+        _securityStaff[index]['parking_location_name'] = assignedName;
+        _securityStaff[index]['parking_location'] = assignedName ?? '';
       }
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          parkingLocation == null || parkingLocation.isEmpty
+          assignedId == null
               ? 'Parking assignment cleared'
-              : 'Assigned to $parkingLocation',
+              : 'Assigned to ${assignedName ?? 'parking'}',
         ),
         duration: const Duration(seconds: 2),
         backgroundColor: Colors.green.shade600,
@@ -173,14 +210,84 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
     );
   }
 
+  Future<void> _deleteSecurityStaff(int userId, String name) async {
+    final jwtToken = AuthTokenStore().token;
+    final response = await http.delete(
+      Uri.parse('$apiBase/api/auth/security-staff/$userId'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (jwtToken != null && jwtToken.isNotEmpty)
+          'Authorization': 'Bearer $jwtToken',
+      },
+    );
+
+    if (!mounted) return;
+    if (response.statusCode != 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_extractErrorMessage(response)),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _securityStaff.removeWhere((staff) => staff['user_id'] == userId);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Deleted $name'),
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.green.shade600,
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteStaff(Map<String, dynamic> staff) async {
+    final userId = staff['user_id'] as int?;
+    if (userId == null) return;
+    final name = staff['name']?.toString() ?? 'Security Staff';
+
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Security Staff'),
+        content: Text('Are you sure you want to remove $name?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete == true) {
+      await _deleteSecurityStaff(userId, name);
+    }
+  }
+
   Future<void> _showEditAssignmentDialog(Map<String, dynamic> staff) async {
     final userId = staff['user_id'] as int?;
     if (userId == null) return;
 
-    final options = ['Unassigned', ..._parkingLocations];
-    String selected = (staff['parking_location'] ?? '').toString().trim();
-    if (selected.isEmpty || !options.contains(selected)) {
-      selected = 'Unassigned';
+    final options = _parkingLocations;
+    int? selectedId = staff['parking_location_id'] as int?;
+    if (selectedId == null) {
+      final raw = (staff['parking_location'] ?? '').toString().trim();
+      final parsed = int.tryParse(raw);
+      if (parsed != null) {
+        selectedId = parsed;
+      }
     }
 
     await showDialog<void>(
@@ -206,23 +313,26 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
                   border: Border.all(color: Colors.grey.shade300),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: DropdownButton<String>(
-                  value: selected,
+                child: DropdownButton<int?>(
+                  value: selectedId,
                   isExpanded: true,
                   underline: const SizedBox(),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  items: options
-                      .map(
-                        (location) => DropdownMenuItem(
-                          value: location,
-                          child: Text(location),
-                        ),
-                      )
-                      .toList(),
+                  items: [
+                    const DropdownMenuItem<int?>(
+                      value: null,
+                      child: Text('Unassigned'),
+                    ),
+                    ...options.map(
+                      (location) => DropdownMenuItem<int?>(
+                        value: location['id'] as int,
+                        child: Text(location['name'].toString()),
+                      ),
+                    ),
+                  ],
                   onChanged: (value) {
-                    if (value == null) return;
                     setDialogState(() {
-                      selected = value;
+                      selectedId = value;
                     });
                   },
                 ),
@@ -239,7 +349,7 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
                 Navigator.pop(context);
                 await _updateAssignedParking(
                   userId,
-                  selected == 'Unassigned' ? null : selected,
+                  selectedId,
                 );
               },
               style: ElevatedButton.styleFrom(
@@ -332,13 +442,29 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
                                         staff['email']?.toString() ?? 'N/A';
                                     final phone =
                                         staff['phone']?.toString() ?? 'N/A';
-                                    final location = (staff['parking_location']
+                                    final parkingId =
+                                        staff['parking_location_id'];
+                                    final parkingName =
+                                        staff['parking_location_name']
+                                            ?.toString();
+                                    final location = (parkingName != null &&
+                                            parkingName.trim().isNotEmpty)
+                                        ? parkingName
+                                        : (parkingId != null
+                                            ? _parkingLocations
+                                                .firstWhere(
+                                                    (loc) => loc['id'] == parkingId,
+                                                    orElse: () => {})
+                                                ['name']
                                                 ?.toString()
-                                                .trim()
-                                                .isNotEmpty ==
-                                            true)
-                                        ? staff['parking_location'].toString()
-                                        : 'Unassigned';
+                                            : null) ??
+                                            ((staff['parking_location'] ?? '')
+                                                    .toString()
+                                                    .trim()
+                                                    .isNotEmpty
+                                                ? staff['parking_location']
+                                                    .toString()
+                                                : 'Unassigned');
                                     final status =
                                         staff['status']?.toString() ??
                                             'inactive';
@@ -483,28 +609,60 @@ class _AdminSecurityStaffScreenState extends State<AdminSecurityStaffScreen> {
                                           const SizedBox(height: 12),
                                           SizedBox(
                                             width: double.infinity,
-                                            child: ElevatedButton.icon(
-                                              onPressed: () =>
-                                                  _showEditAssignmentDialog(
-                                                      staff),
-                                              icon: const Icon(
-                                                Icons.edit_location_alt,
-                                                size: 16,
-                                              ),
-                                              label: const Text(
-                                                  'Change Assigned Parking'),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor:
-                                                    Colors.orange.shade600,
-                                                foregroundColor: Colors.white,
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                        vertical: 10),
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius:
-                                                      BorderRadius.circular(8),
+                                            child: Column(
+                                              children: [
+                                                SizedBox(
+                                                  width: double.infinity,
+                                                  child: ElevatedButton.icon(
+                                                    onPressed: () =>
+                                                        _showEditAssignmentDialog(
+                                                            staff),
+                                                    icon: const Icon(
+                                                      Icons.edit_location_alt,
+                                                      size: 16,
+                                                    ),
+                                                    label: const Text(
+                                                        'Change Assigned Parking'),
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor:
+                                                          Colors.orange.shade600,
+                                                      foregroundColor: Colors.white,
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                              vertical: 10),
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius:
+                                                            BorderRadius.circular(8),
+                                                      ),
+                                                    ),
+                                                  ),
                                                 ),
-                                              ),
+                                                const SizedBox(height: 8),
+                                                SizedBox(
+                                                  width: double.infinity,
+                                                  child: ElevatedButton.icon(
+                                                    onPressed: () =>
+                                                        _confirmDeleteStaff(staff),
+                                                    icon: const Icon(
+                                                      Icons.delete,
+                                                      size: 16,
+                                                    ),
+                                                    label: const Text('Delete'),
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor:
+                                                          Colors.red.shade600,
+                                                      foregroundColor: Colors.white,
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                              vertical: 10),
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius:
+                                                            BorderRadius.circular(8),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
                                             ),
                                           ),
                                         ],

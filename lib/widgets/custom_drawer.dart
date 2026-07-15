@@ -11,14 +11,22 @@ class CustomDrawer extends StatelessWidget {
   final bool showHomeItem;
   final bool showLoginItem;
   final bool showCustomerHistory;
+  final bool showDriverProfile;
+  final bool showDriverAcceptedRequests;
   final WidgetBuilder? helpScreenBuilder;
+  final WidgetBuilder? driverProfileBuilder;
+  final WidgetBuilder? driverAcceptedRequestsBuilder;
 
   const CustomDrawer({
     Key? key,
     this.showHomeItem = true,
     this.showLoginItem = true,
     this.showCustomerHistory = false,
+    this.showDriverProfile = false,
+    this.showDriverAcceptedRequests = false,
     this.helpScreenBuilder,
+    this.driverProfileBuilder,
+    this.driverAcceptedRequestsBuilder,
   }) : super(key: key);
 
   @override
@@ -93,6 +101,40 @@ class CustomDrawer extends StatelessWidget {
                     builder: (context) => const CustomerBookingHistoryScreen(),
                   ),
                 );
+              },
+            ),
+
+          if (showDriverProfile)
+            ListTile(
+              leading: const Icon(Icons.account_circle),
+              title: const Text('Profile'),
+              onTap: () {
+                Navigator.pop(context);
+                if (driverProfileBuilder != null) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: driverProfileBuilder!,
+                    ),
+                  );
+                }
+              },
+            ),
+
+          if (showDriverAcceptedRequests)
+            ListTile(
+              leading: const Icon(Icons.assignment_turned_in),
+              title: const Text('Accepted Requests'),
+              onTap: () {
+                Navigator.pop(context);
+                if (driverAcceptedRequestsBuilder != null) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: driverAcceptedRequestsBuilder!,
+                    ),
+                  );
+                }
               },
             ),
 

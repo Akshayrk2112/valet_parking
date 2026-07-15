@@ -20,34 +20,94 @@ class _RegisterSecurityScreenState extends State<RegisterSecurityScreen> {
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
-  final _parkingLocationController = TextEditingController();
   final _passwordController = TextEditingController();
 
   bool _isLoading = false;
+  bool _isLoadingLocations = false;
+  List<Map<String, dynamic>> _parkingLocations = [];
+  int? _selectedParkingId;
 
   @override
   void dispose() {
     _nameController.dispose();
     _phoneController.dispose();
     _emailController.dispose();
-    _parkingLocationController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchParkingLocations();
+  }
+
+  Future<void> _fetchParkingLocations() async {
+    setState(() {
+      _isLoadingLocations = true;
+    });
+    try {
+      final response = await http.get(
+        Uri.parse('$apiBase/api/parking/locations'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final locations = (data['locations'] as List<dynamic>? ?? [])
+            .map((item) {
+              final loc = Map<String, dynamic>.from(item as Map);
+              final idRaw = loc['id'];
+              final id = idRaw is int
+                  ? idRaw
+                  : int.tryParse(idRaw?.toString() ?? '');
+              if (id == null) return null;
+              return {
+                'id': id,
+                'name': loc['name']?.toString() ?? '',
+              };
+            })
+            .whereType<Map<String, dynamic>>()
+            .where((loc) => (loc['name'] ?? '').toString().trim().isNotEmpty)
+            .toList();
+        locations.sort((a, b) =>
+            a['name'].toString().toLowerCase().compareTo(
+                b['name'].toString().toLowerCase()));
+        if (!mounted) return;
+        setState(() {
+          _parkingLocations = locations;
+          _isLoadingLocations = false;
+        });
+        return;
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _parkingLocations = [];
+      _isLoadingLocations = false;
+    });
   }
 
   void _registerSecurity() async {
     final name = _nameController.text.trim();
     final phone = _phoneController.text.trim();
     final email = _emailController.text.trim();
-    final parkingLocation = _parkingLocationController.text.trim();
     final password = _passwordController.text;
+    final selectedLocation = _parkingLocations.firstWhere(
+      (loc) => loc['id'] == _selectedParkingId,
+      orElse: () => {},
+    );
+    final parkingLocationName =
+        (selectedLocation['name'] ?? '').toString().trim();
 
     if (name.isEmpty ||
         phone.isEmpty ||
         email.isEmpty ||
-        parkingLocation.isEmpty ||
         password.isEmpty) {
       _showError('Please fill all fields');
+      return;
+    }
+    if (_selectedParkingId == null || parkingLocationName.isEmpty) {
+      _showError('Please select a parking location');
       return;
     }
     if (phone.length < 10) {
@@ -74,7 +134,7 @@ class _RegisterSecurityScreenState extends State<RegisterSecurityScreen> {
       'email': email,
       'password': password,
       'phone': phone,
-      'location': parkingLocation,
+      'parking_location': _selectedParkingId,
       'role': 'security',
     };
     try {
@@ -91,7 +151,7 @@ class _RegisterSecurityScreenState extends State<RegisterSecurityScreen> {
           staffName: name,
           email: email,
           phone: phone,
-          parkingLocation: parkingLocation,
+          parkingLocation: parkingLocationName,
         );
       } else {
         final msg = json.decode(response.body)['message'] ?? 'Registration failed';
@@ -271,12 +331,40 @@ class _RegisterSecurityScreenState extends State<RegisterSecurityScreen> {
                 // Parking Location
                 _buildFormLabel('Parking Location'),
                 const SizedBox(height: 8),
-                TextFormField(
-                  controller: _parkingLocationController,
-                  decoration: _buildInputDecoration('e.g., Parking A'),
-                  validator: (value) => value == null || value.isEmpty
-                      ? 'Enter parking location'
-                      : null,
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: DropdownButtonFormField<int>(
+                    value: _selectedParkingId,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                    hint: Text(
+                      _isLoadingLocations
+                          ? 'Loading locations...'
+                          : 'Select parking location',
+                    ),
+                    items: _parkingLocations
+                        .map(
+                          (loc) => DropdownMenuItem<int>(
+                            value: loc['id'] as int,
+                            child: Text(loc['name'].toString()),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: _isLoadingLocations
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _selectedParkingId = value;
+                            });
+                          },
+                  ),
                 ),
                 const SizedBox(height: 20),
                 // Password

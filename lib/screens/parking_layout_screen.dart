@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import '../models/parking_models.dart';
 import '../core/utils/auth_token_store.dart';
+import '../core/utils/validators.dart';
 import '../core/config.dart';
 import 'booking_confirmed_screen.dart';
 
@@ -574,64 +576,60 @@ class _ParkingLayoutScreenState extends State<ParkingLayoutScreen> {
                 !_isParkingConfirmed
                     ? 'Security has not confirmed parking yet. This slot is currently booked. You can cancel if you do not want to park here.'
                     : _hasReturnRequested
-                        ? 'Return already requested. Security can now confirm return.'
-                        : 'When you arrive, tap Request Return and ask security to confirm return.',
+                        ? 'Return already requested. Security will confirm return.'
+                        : 'Your car is parked in this slot.',
                 style: TextStyle(
                   fontSize: 12,
                   color: !_isParkingConfirmed
                       ? Colors.orange.shade700
                       : _hasReturnRequested
-                      ? Colors.green.shade700
-                      : Colors.grey.shade700,
+                          ? Colors.green.shade700
+                          : Colors.grey.shade700,
                 ),
               ),
               const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed: !_isParkingConfirmed
-                          ? (_isCancellingBooking
-                              ? null
-                              : () async {
-                                  await _cancelSelfParkingBooking();
-                                })
-                          : (_isRequestingReturn || _hasReturnRequested
-                              ? null
-                              : () async {
-                                  await _requestVehicleReturn();
-                                  if (mounted) Navigator.pop(context);
-                                }),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: !_isParkingConfirmed
-                            ? Colors.red.shade600
-                            : Colors.blue.shade600,
+              _isParkingConfirmed
+                  ? SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Close'),
                       ),
-                      child: (_isRequestingReturn || _isCancellingBooking)
-                          ? const SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Text(
-                              !_isParkingConfirmed
-                                  ? 'Cancel Booking'
-                                  : _hasReturnRequested
-                                  ? 'Return Requested'
-                                  : 'Request Return',
-                              style: const TextStyle(color: Colors.white),
+                    )
+                  : Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Close'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: _isCancellingBooking
+                                ? null
+                                : () async {
+                                    await _cancelSelfParkingBooking();
+                                  },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red.shade600,
                             ),
+                            child: _isCancellingBooking
+                                ? const SizedBox(
+                                    height: 18,
+                                    width: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Text(
+                                    'Cancel Booking',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ],
           ),
         ),
@@ -906,9 +904,15 @@ class _ParkingLayoutScreenState extends State<ParkingLayoutScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: vehicleNumberController,
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(
+                      RegExp(r'[a-zA-Z0-9 \-]'),
+                    ),
+                  ],
                   decoration: InputDecoration(
                     labelText: 'Vehicle Number/Plate',
-                    hintText: 'e.g., AB12CD1234',
+                    hintText: 'e.g., KL58AH9653',
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -965,8 +969,9 @@ class _ParkingLayoutScreenState extends State<ParkingLayoutScreen> {
                     Expanded(
                       child: ElevatedButton(
                         onPressed: () async {
-                          final vehicleNumber =
-                              vehicleNumberController.text.trim();
+                          final vehicleNumber = normalizeVehicleNumber(
+                            vehicleNumberController.text,
+                          );
                           final vehicleType = vehicleTypeController.text.trim();
 
                           if (vehicleType.isEmpty) {
@@ -977,10 +982,12 @@ class _ParkingLayoutScreenState extends State<ParkingLayoutScreen> {
                             return;
                           }
 
-                          if (vehicleNumber.isEmpty) {
+                          final vehicleNumberError = validateVehicleNumber(
+                            vehicleNumberController.text,
+                          );
+                          if (vehicleNumberError != null) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                  content: Text('Please enter vehicle number')),
+                              SnackBar(content: Text(vehicleNumberError)),
                             );
                             return;
                           }

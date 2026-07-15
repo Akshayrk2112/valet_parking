@@ -78,9 +78,17 @@ coverage/
 # Dart tooling
 .dart_tool/
 
+# Local Python environments
+.venv/
+
 # Node
 **/node_modules/
 
 # Env files
 .env
 .env.*
+!.env.example
+
+# Local archives/backups
+*.zip
+backend-mysql/.git-local-backup/

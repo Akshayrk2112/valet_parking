@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'login_screen.dart';
 import 'driver_current_request_screen.dart';
+import 'driver_accepted_requests_screen.dart';
 import 'driver_profile_screen.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../core/utils/auth_token_store.dart';
 import '../core/config.dart';
+import '../widgets/custom_drawer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
@@ -18,6 +20,16 @@ class DriverDashboardScreen extends StatefulWidget {
 
 class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   DateTime? _lastBackPressed;
+  static const List<String> _declineReasons = [
+    'Too far from location',
+    'Currently handling another task',
+    'Vehicle type issue',
+    'Customer location unclear',
+    'Parking area unavailable',
+    'Shift ending',
+    'Personal emergency',
+    'Other',
+  ];
 
   Future<bool> _handleExitWarning() async {
     final now = DateTime.now();
@@ -69,6 +81,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           booking['desired_return_location']?.toString() ?? '',
       'returnStatus': booking['return_status']?.toString() ?? '',
       'returnDriverName': booking['return_driver_name']?.toString() ?? '',
+      'eligibleToAccept': booking['eligible_to_accept'] == true,
+      'priorityPosition': booking['priority_position'],
+      'acceptedRequestsToday': booking['accepted_requests_today'],
     };
   }
 
@@ -82,10 +97,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   String _extractErrorMessage(http.Response response) {
     try {
       final decoded = jsonDecode(response.body);
-      if (decoded is Map<String, dynamic> &&
-          decoded['error'] is String &&
-          (decoded['error'] as String).isNotEmpty) {
-        return decoded['error'] as String;
+      if (decoded is Map<String, dynamic>) {
+        final error = decoded['error']?.toString();
+        if (error != null && error.isNotEmpty) return error;
+        final message = decoded['message']?.toString();
+        if (message != null && message.isNotEmpty) return message;
       }
     } catch (_) {}
     return 'HTTP ${response.statusCode}';
@@ -116,8 +132,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         return true;
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Failed to accept booking'),
+          SnackBar(
+              content: Text(_extractErrorMessage(response)),
               backgroundColor: Colors.red),
         );
         return false;
@@ -131,7 +147,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     }
   }
 
-  Future<bool> _declineBooking(String bookingToken) async {
+  Future<bool> _declineBooking(
+    String bookingToken,
+    Map<String, String> declineDetails,
+  ) async {
     final jwtToken = AuthTokenStore().token;
     final url = Uri.parse('$apiBase/api/bookings/$bookingToken');
     try {
@@ -144,19 +163,19 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
         },
         body: jsonEncode({
           'status': 'declined',
+          'decline_reason': declineDetails['reason'],
         }),
       );
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content:
-                  Text('Booking declined. Other drivers can now accept it.')),
+              content: Text('Booking declined. Admin has been notified.')),
         );
         return true;
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Failed to decline booking'),
+          SnackBar(
+              content: Text(_extractErrorMessage(response)),
               backgroundColor: Colors.red),
         );
         return false;
@@ -204,7 +223,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     }
   }
 
-  Future<bool> _declineReturnRequest(String bookingToken) async {
+  Future<bool> _declineReturnRequest(
+    String bookingToken,
+    Map<String, String> declineDetails,
+  ) async {
     final jwtToken = AuthTokenStore().token;
     final url = Uri.parse('$apiBase/api/bookings/$bookingToken/decline-return');
     try {
@@ -215,10 +237,15 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           if (jwtToken != null && jwtToken.isNotEmpty)
             'Authorization': 'Bearer $jwtToken',
         },
+        body: jsonEncode({
+          'decline_reason': declineDetails['reason'],
+        }),
       );
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Return request declined')),
+          const SnackBar(
+              content:
+                  Text('Return request declined. Admin has been notified.')),
         );
         return true;
       }
@@ -394,11 +421,13 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
       if (!mounted) return;
       setState(() {
-        _incomingRequests = mergedBookings
-            .map((b) => _toRequestMap(b as Map<String, dynamic>))
-            .whereType<Map<String, dynamic>>()
-            .toList();
         _myAcceptedRequest = acceptedRequest;
+        _incomingRequests = acceptedRequest != null
+            ? []
+            : mergedBookings
+                .map((b) => _toRequestMap(b as Map<String, dynamic>))
+                .whereType<Map<String, dynamic>>()
+                .toList();
         _fetchError = fetchError;
       });
     } catch (e) {
@@ -448,15 +477,86 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     _fetchPendingBookings(silent: true);
   }
 
+  Future<Map<String, String>?> _askDeclineDetails(bool isReturnRequest) async {
+    String selectedReason = _declineReasons.first;
+
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          title: Text(isReturnRequest ? 'Decline Return' : 'Decline Request'),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.42,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: selectedReason,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Reason',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: _declineReasons
+                        .map(
+                          (reason) => DropdownMenuItem<String>(
+                            value: reason,
+                            child: Text(
+                              reason,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setDialogState(() {
+                        selectedReason = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop({
+                  'reason': selectedReason,
+                });
+              },
+              child: const Text('Decline'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return result;
+  }
+
   Future<void> _declineRequest(String requestId) async {
     final request = _incomingRequests.firstWhere(
       (r) => r['id'] == requestId,
     );
     final isReturnRequest =
         (request['requestType'] ?? '').toString().toLowerCase() == 'return';
+    final declineDetails = await _askDeclineDetails(isReturnRequest);
+    if (declineDetails == null) return;
+
     final declined = isReturnRequest
-        ? await _declineReturnRequest(requestId)
-        : await _declineBooking(requestId);
+        ? await _declineReturnRequest(requestId, declineDetails)
+        : await _declineBooking(requestId, declineDetails);
     if (!declined || !mounted) return;
 
     setState(() {
@@ -886,205 +986,243 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     return WillPopScope(
       onWillPop: _handleExitWarning,
       child: Scaffold(
-        appBar: AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.account_circle),
-          tooltip: 'Profile',
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => const DriverProfileScreen(),
-              ),
-            );
-          },
+        drawer: CustomDrawer(
+          showHomeItem: false,
+          showLoginItem: false,
+          showDriverProfile: true,
+          showDriverAcceptedRequests: true,
+          driverProfileBuilder: (context) => const DriverProfileScreen(),
+          driverAcceptedRequestsBuilder: (context) =>
+              const DriverAcceptedRequestsScreen(),
         ),
-        title: const Text('Driver Dashboard'),
-        backgroundColor: Colors.blue.shade600,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          Stack(
-            children: [
-              IconButton(
-                icon: _isLoadingNotifications
-                    ? SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation(
-                            Colors.white.withValues(alpha: 0.9),
+        appBar: AppBar(
+          leading: Builder(
+            builder: (context) => IconButton(
+              icon: const Icon(Icons.menu),
+              tooltip: 'Menu',
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            ),
+          ),
+          title: const Text('Driver Dashboard'),
+          backgroundColor: Colors.blue.shade600,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          actions: [
+            Stack(
+              children: [
+                IconButton(
+                  icon: _isLoadingNotifications
+                      ? SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation(
+                              Colors.white.withValues(alpha: 0.9),
+                            ),
                           ),
+                        )
+                      : const Icon(Icons.notifications),
+                  onPressed: _openNotifications,
+                ),
+                if (_unreadNotificationCount > 0)
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade600,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        _unreadNotificationCount > 99
+                            ? '99+'
+                            : '$_unreadNotificationCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
                         ),
-                      )
-                    : const Icon(Icons.notifications),
-                onPressed: _openNotifications,
-              ),
-              if (_unreadNotificationCount > 0)
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.red.shade600,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      _unreadNotificationCount > 99
-                          ? '99+'
-                          : '$_unreadNotificationCount',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
                       ),
                     ),
                   ),
-                ),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh Requests',
-            onPressed: _fetchPendingBookings,
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: _logout,
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildAvailabilityCard(),
-                      const SizedBox(height: 16),
+              ],
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh Requests',
+              onPressed: _fetchPendingBookings,
+            ),
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: _logout,
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildAvailabilityCard(),
+                        const SizedBox(height: 16),
 
-                      if (_myAcceptedRequest != null) ...[
+                        if (_myAcceptedRequest != null) ...[
+                          Text(
+                            'My Accepted Request',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade800,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          _buildAcceptedRequestCard(_myAcceptedRequest!),
+                          const SizedBox(height: 24),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.amber.shade200),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.info_outline,
+                                  size: 18,
+                                  color: Colors.amber.shade700,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Pickup and return requests will appear after you complete this task.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.amber.shade800,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                        ],
+
+                        if (_myAcceptedRequest == null) ...[
+                          // Return Requests Section
+                          Text(
+                            'Return Requests',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade800,
+                            ),
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          if (_fetchError != null) ...[
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade50,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red.shade200),
+                              ),
+                              child: Text(
+                                _fetchError!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.red.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+
+                          if (_incomingReturnRequests.isEmpty)
+                            _buildNoRequestsCard(
+                                'No return requests at the moment')
+                          else
+                            Column(
+                              children: _incomingReturnRequests
+                                  .map((request) => _buildRequestCard(request))
+                                  .toList(),
+                            ),
+
+                          const SizedBox(height: 20),
+
+                          Text(
+                            'Pickup Requests',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.grey.shade800,
+                            ),
+                          ),
+
+                          const SizedBox(height: 12),
+
+                          if (_incomingPickupRequests.isEmpty)
+                            _buildNoRequestsCard(
+                                'No pickup requests at the moment')
+                          else
+                            Column(
+                              children: _incomingPickupRequests
+                                  .map((request) => _buildRequestCard(request))
+                                  .toList(),
+                            ),
+
+                          const SizedBox(height: 32),
+                        ],
+
+                        // Your Stats Section
                         Text(
-                          'My Accepted Request',
+                          'Your Stats',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
                             color: Colors.grey.shade800,
                           ),
                         ),
+
                         const SizedBox(height: 12),
-                        _buildAcceptedRequestCard(_myAcceptedRequest!),
-                        const SizedBox(height: 24),
+
+                        // Stats Cards
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'Parked Today',
+                                _parkedToday.toString(),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _buildStatCard(
+                                'Total Parked',
+                                _totalParked.toString(),
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 32),
                       ],
-
-                      // Return Requests Section
-                      Text(
-                        'Return Requests',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey.shade800,
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      if (_fetchError != null) ...[
-                        Container(
-                          width: double.infinity,
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.red.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.red.shade200),
-                          ),
-                          child: Text(
-                            _fetchError!,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.red.shade700,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-
-                      if (_incomingReturnRequests.isEmpty)
-                        _buildNoRequestsCard('No return requests at the moment')
-                      else
-                        Column(
-                          children: _incomingReturnRequests
-                              .map((request) => _buildRequestCard(request))
-                              .toList(),
-                        ),
-
-                      const SizedBox(height: 20),
-
-                      Text(
-                        'Pickup Requests',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey.shade800,
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      if (_incomingPickupRequests.isEmpty)
-                        _buildNoRequestsCard('No pickup requests at the moment')
-                      else
-                        Column(
-                          children: _incomingPickupRequests
-                              .map((request) => _buildRequestCard(request))
-                              .toList(),
-                        ),
-
-                      const SizedBox(height: 32),
-
-                      // Your Stats Section
-                      Text(
-                        'Your Stats',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey.shade800,
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      // Stats Cards
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildStatCard(
-                              'Parked Today',
-                              _parkedToday.toString(),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildStatCard(
-                              'Total Parked',
-                              _totalParked.toString(),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 32),
-                    ],
+                    ),
                   ),
                 ),
-              ),
         ),
       ),
     );
@@ -1191,6 +1329,20 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             ? request['returnLocationText'].toString()
             : 'Customer location')
         : request['parkingLocation'];
+    final parkedLocationValue =
+        request['parkingLocationName']?.toString().isNotEmpty == true
+            ? request['parkingLocationName'].toString()
+            : (request['parkingLocation']?.toString().isNotEmpty == true
+                ? 'Location ${request['parkingLocation']}'
+                : 'Not assigned');
+    final parkedSlotValue =
+        request['slotNumber']?.toString().trim().isNotEmpty == true
+            ? request['slotNumber'].toString()
+            : 'Not assigned';
+    final canActOnRequest =
+        _isDriverAvailable && request['eligibleToAccept'] == true;
+    final priorityPosition = request['priorityPosition'];
+    final acceptedToday = request['acceptedRequestsToday'];
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -1220,6 +1372,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   children: [
                     Text(
                       request['customerName'],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
@@ -1229,6 +1383,8 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                     const SizedBox(height: 4),
                     Text(
                       request['vehicleModel'],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.grey.shade600,
@@ -1237,50 +1393,167 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.access_time,
+                          size: 14,
+                          color: Colors.grey.shade600,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            request['time'],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isReturnRequest ? Icons.flag : Icons.location_on,
+                          size: 14,
+                          color: Colors.grey.shade600,
+                        ),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            '$locationLabel: $locationValue',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+
+          if (isReturnRequest) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.deepPurple.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.deepPurple.shade100),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
-                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(
-                        Icons.access_time,
-                        size: 14,
-                        color: Colors.grey.shade600,
+                        Icons.local_parking,
+                        size: 16,
+                        color: Colors.deepPurple.shade700,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        request['time'],
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade600,
-                          fontWeight: FontWeight.w500,
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Parked at: $parkedLocationValue',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.deepPurple.shade800,
+                          ),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 6),
                   Row(
-                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        isReturnRequest ? Icons.flag : Icons.location_on,
-                        size: 14,
-                        color: Colors.grey.shade600,
+                        Icons.confirmation_number,
+                        size: 16,
+                        color: Colors.deepPurple.shade700,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        '$locationLabel: $locationValue',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade600,
-                          fontWeight: FontWeight.w500,
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Parking slot: $parkedSlotValue',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.deepPurple.shade800,
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ],
               ),
+            ),
+          ],
+
+          const SizedBox(height: 16),
+
+          Row(
+            children: [
+              Icon(
+                request['eligibleToAccept'] == true
+                    ? Icons.check_circle
+                    : Icons.hourglass_bottom,
+                size: 16,
+                color: request['eligibleToAccept'] == true
+                    ? Colors.green.shade700
+                    : Colors.amber.shade700,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  request['eligibleToAccept'] == true
+                      ? 'Your turn to accept or decline'
+                      : (priorityPosition == null
+                          ? 'Waiting for an available priority driver'
+                          : 'Waiting for your turn. Queue position $priorityPosition'),
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: request['eligibleToAccept'] == true
+                        ? Colors.green.shade700
+                        : Colors.amber.shade800,
+                  ),
+                ),
+              ),
+              if (acceptedToday != null)
+                Text(
+                  'Today: $acceptedToday',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
             ],
           ),
 
@@ -1291,7 +1564,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             children: [
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _isDriverAvailable
+                  onPressed: canActOnRequest
                       ? () => _acceptRequest(request['id'])
                       : null,
                   style: ElevatedButton.styleFrom(
@@ -1340,7 +1613,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton(
-                  onPressed: _isDriverAvailable
+                  onPressed: canActOnRequest
                       ? () => _declineRequest(request['id'])
                       : null,
                   style: OutlinedButton.styleFrom(

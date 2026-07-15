@@ -18,6 +18,7 @@ class SecurityDashboardScreen extends StatefulWidget {
 
 class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
   String _parkingName = 'Parking A';
+  int? _parkingLocationId;
   bool _isLoadingAssignment = false;
   bool _isLoadingNotifications = false;
   int _unreadNotificationCount = 0;
@@ -28,6 +29,7 @@ class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
   int _occupiedSpaces = 0;
   int _totalCapacity = 0;
   DateTime? _lastBackPressed;
+  bool _isRefreshing = false;
 
   Future<bool> _handleExitWarning() async {
     final now = DateTime.now();
@@ -124,11 +126,18 @@ class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final assignedParking =
-            (data['parking_location'] ?? '').toString().trim();
-        if (assignedParking.isNotEmpty) {
+        final assignedName =
+            (data['parking_location_name'] ?? '').toString().trim();
+        final assignedIdRaw = data['parking_location_id'];
+        final assignedId = assignedIdRaw is int
+            ? assignedIdRaw
+            : int.tryParse(assignedIdRaw?.toString() ?? '');
+        if (assignedName.isNotEmpty || assignedId != null) {
           setState(() {
-            _parkingName = assignedParking;
+            _parkingName = assignedName.isNotEmpty
+                ? assignedName
+                : (data['parking_location'] ?? '').toString();
+            _parkingLocationId = assignedId;
           });
           await _loadSlotCounts();
         }
@@ -139,6 +148,24 @@ class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
       if (mounted) {
         setState(() {
           _isLoadingAssignment = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _refreshDashboard() async {
+    if (_isRefreshing) return;
+    setState(() {
+      _isRefreshing = true;
+    });
+    try {
+      await _loadSecurityAssignment();
+      await _loadSlotCounts();
+      await _loadNotifications();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRefreshing = false;
         });
       }
     }
@@ -162,13 +189,14 @@ class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
       final locations = (data['locations'] as List<dynamic>? ?? []);
 
       final assignedName = _parkingName.trim().toLowerCase();
-      final assignedId = int.tryParse(_parkingName.trim());
+      final assignedId = _parkingLocationId;
       final matched = locations.cast<Map>().firstWhere(
             (loc) {
-              final idMatch =
-                  assignedId != null && loc['id'].toString() == assignedId.toString();
-              final nameMatch = (loc['name'] ?? '').toString().trim().toLowerCase() ==
-                  assignedName;
+              final idMatch = assignedId != null &&
+                  loc['id'].toString() == assignedId.toString();
+              final nameMatch =
+                  (loc['name'] ?? '').toString().trim().toLowerCase() ==
+                      assignedName;
               return idMatch || nameMatch;
             },
             orElse: () => {},
@@ -410,6 +438,22 @@ class _SecurityDashboardScreenState extends State<SecurityDashboardScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         actions: [
+          IconButton(
+            icon: _isRefreshing
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation(
+                        Colors.white.withValues(alpha: 0.9),
+                      ),
+                    ),
+                  )
+                : const Icon(Icons.refresh),
+            onPressed: _isRefreshing ? null : _refreshDashboard,
+            tooltip: 'Refresh',
+          ),
           Stack(
             children: [
               IconButton(

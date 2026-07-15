@@ -81,17 +81,22 @@ String? validatePhoneNumber(String? value) {
 
 /// Vehicle number validation
 String? validateVehicleNumber(String? value) {
-  if (value == null || value.isEmpty) {
+  final cleanVehicleNumber = normalizeVehicleNumber(value);
+  if (cleanVehicleNumber.isEmpty) {
     return 'Vehicle number is required';
   }
 
-  // Indian vehicle number format: XX-00-XX-0000
-  // Simplified: allow alphanumeric with hyphens
-  if (!RegExp(r'^[A-Z0-9\-]{5,}$').hasMatch(value.toUpperCase())) {
-    return 'Please enter a valid vehicle number';
+  // Indian vehicle number format, e.g. KL58AH9653.
+  if (!RegExp(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{4}$')
+      .hasMatch(cleanVehicleNumber)) {
+    return 'Enter a valid vehicle number, e.g. KL58AH9653';
   }
 
   return null;
+}
+
+String normalizeVehicleNumber(String? value) {
+  return (value ?? '').toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
 }
 
 /// License number validation

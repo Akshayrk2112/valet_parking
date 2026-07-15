@@ -273,6 +273,22 @@ class _AdminActiveBookingsScreenState extends State<AdminActiveBookingsScreen> {
     return 'Driver $driverId';
   }
 
+  List<Map<String, dynamic>> _declines(Map<String, dynamic> booking) {
+    final raw = booking['declines'];
+    if (raw is! List) return [];
+    return raw
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  String _declineDriverLabel(Map<String, dynamic> decline) {
+    final driverName = (decline['driver_name'] ?? '').toString().trim();
+    final driverId = decline['driver_id'];
+    if (driverName.isNotEmpty) return '$driverName (ID $driverId)';
+    return 'Driver ${driverId ?? 'N/A'}';
+  }
+
   String _locationName(Map<String, dynamic> booking) {
     final locIdRaw = booking['location_id'];
     final locId =
@@ -426,6 +442,7 @@ class _AdminActiveBookingsScreenState extends State<AdminActiveBookingsScreen> {
     final location = _locationName(booking);
     final slot = (booking['slot_number'] ?? '').toString().trim();
     final slotText = slot.isNotEmpty ? slot : 'Not assigned';
+    final declines = _declines(booking);
 
     return GestureDetector(
       onTap: () => _showBookingDetails(booking),
@@ -547,6 +564,15 @@ class _AdminActiveBookingsScreenState extends State<AdminActiveBookingsScreen> {
               'Driver: ${_driverName(booking)}',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
             ),
+            if (declines.isNotEmpty)
+              Text(
+                'Declines: ${declines.length}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.red.shade700,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
           ],
         ),
       ),
@@ -694,10 +720,93 @@ class _AdminActiveBookingsScreenState extends State<AdminActiveBookingsScreen> {
                   'Completed At',
                   _formatTime(booking['completed_at']),
                 ),
+                _buildDeclineHistory(booking),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDeclineHistory(Map<String, dynamic> booking) {
+    final declines = _declines(booking);
+    if (declines.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Decline History',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.red.shade700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...declines.map((decline) {
+            final reason =
+                (decline['decline_reason'] ?? 'No reason').toString();
+            final note = (decline['decline_note'] ?? '').toString().trim();
+            final requestType =
+                (decline['request_type'] ?? 'pickup').toString();
+            return Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.red.shade100),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _declineDriverLabel(decline),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey.shade800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${requestType.toUpperCase()} | $reason',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.red.shade700,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (note.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      note,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 4),
+                  Text(
+                    _formatTime(decline['declined_at']),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ],
       ),
     );
   }

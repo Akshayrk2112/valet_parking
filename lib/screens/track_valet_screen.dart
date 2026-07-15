@@ -6,7 +6,6 @@ import 'dart:convert';
 import '../core/utils/auth_token_store.dart';
 import '../core/config.dart';
 import '../models/parking_models.dart';
-import '../widgets/custom_drawer.dart';
 import 'parking_layout_screen.dart';
 
 class TrackValetScreen extends StatefulWidget {
@@ -32,9 +31,20 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
   bool _returnCompleted = false;
   Map<String, dynamic>? _currentBooking;
   Map<int, bool> _expandedLocations = {};
+  bool _isCancellingBooking = false;
 
   bool get _isParkingConfirmed =>
       (_userBookingStatus ?? '').toLowerCase() == 'confirmed';
+
+  bool get _isSelfParkingBooking {
+    final booking = _currentBooking ?? {};
+    final driverId = booking['driver_id'];
+    final hasDriver =
+        driverId != null && driverId.toString() != '0' && driverId.toString() != '0.0';
+    return !hasDriver &&
+        booking['location_id'] != null &&
+        booking['slot_number'] != null;
+  }
 
   @override
   void initState() {
@@ -279,9 +289,23 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
     if (status == 'requested') return 'Return requested - waiting for driver';
     if (status == 'accepted') return 'Driver accepted - waiting security release';
     if (status == 'released') return 'Released by security - vehicle on the way';
+    if (status == 'handover_confirmed') return 'Driver confirmed handover';
     if (status == 'completed') return 'Return completed';
     if (status.isEmpty && _hasReturnRequested) return 'Return requested';
     return 'Not requested';
+  }
+
+  String _extractApiError(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        final error = decoded['error']?.toString();
+        if (error != null && error.isNotEmpty) return error;
+        final message = decoded['message']?.toString();
+        if (message != null && message.isNotEmpty) return message;
+      }
+    } catch (_) {}
+    return 'Request failed (${response.statusCode})';
   }
 
   Widget _buildDetailRow(String label, String value) {
@@ -535,6 +559,8 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
     final locationController = TextEditingController();
     final latController = TextEditingController();
     final lngController = TextEditingController();
+    bool hasFetchedCoords = false;
+    bool isFetchingLocation = false;
     String paymentMethod = 'gpay';
     final booking = _currentBooking ?? {};
     final isSelfParking = (booking['driver_id'] == null ||
@@ -562,22 +588,49 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
         : int.tryParse('${estimate['extra_fee_per_10_min_rs']}');
 
     Future<void> fillCurrentLocation(StateSetter modalSetState) async {
+      if (isFetchingLocation) return;
+      modalSetState(() {
+        isFetchingLocation = true;
+      });
       final permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission is required to continue.'),
+            ),
+          );
+        }
+        modalSetState(() {
+          isFetchingLocation = false;
+        });
         return;
       }
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      modalSetState(() {
-        latController.text = pos.latitude.toStringAsFixed(6);
-        lngController.text = pos.longitude.toStringAsFixed(6);
-        if (locationController.text.trim().isEmpty) {
-          locationController.text =
-              'Lat ${latController.text}, Lng ${lngController.text}';
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        modalSetState(() {
+          latController.text = pos.latitude.toStringAsFixed(6);
+          lngController.text = pos.longitude.toStringAsFixed(6);
+          hasFetchedCoords = true;
+          isFetchingLocation = false;
+          if (locationController.text.trim().isEmpty) {
+            locationController.text =
+                'Lat ${latController.text}, Lng ${lngController.text}';
+          }
+        });
+      } catch (e) {
+        modalSetState(() {
+          isFetchingLocation = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to get location: $e')),
+          );
         }
-      });
+      }
     }
 
     await showModalBottomSheet(
@@ -585,61 +638,95 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => StatefulBuilder(
-        builder: (context, modalSetState) => Container(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.9,
-          ),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.only(
-              topLeft: Radius.circular(24),
-              topRight: Radius.circular(24),
+        builder: (context, modalSetState) {
+          final hasCoordinates = latController.text.trim().isNotEmpty &&
+              lngController.text.trim().isNotEmpty;
+          final canSubmit =
+              _isSubmittingReturnRequest || isFetchingLocation
+                  ? false
+                  : (isSelfParking || hasCoordinates);
+
+          return Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.9,
             ),
-          ),
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 20,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(24),
+                topRight: Radius.circular(24),
+              ),
             ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Return Request',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey.shade800,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (!isSelfParking) ...[
-                    TextField(
-                      controller: locationController,
-                      decoration: const InputDecoration(
-                        labelText: 'Desired Return Location',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextButton.icon(
-                      onPressed: () => fillCurrentLocation(modalSetState),
-                      icon: const Icon(Icons.my_location),
-                      label: const Text('Use Current Location'),
-                    ),
+            child: Padding(
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      'Location coordinates will be captured automatically.',
+                      'Return Request',
                       style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade600,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey.shade800,
                       ),
                     ),
-                    const SizedBox(height: 8),
-                  ] else ...[
+                    const SizedBox(height: 12),
+                    if (!isSelfParking) ...[
+                      TextField(
+                        controller: locationController,
+                        decoration: const InputDecoration(
+                          labelText: 'Desired Return Location',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      TextButton.icon(
+                        onPressed: isFetchingLocation
+                            ? null
+                            : () => fillCurrentLocation(modalSetState),
+                        icon: const Icon(Icons.my_location),
+                        label: Text(
+                          isFetchingLocation
+                              ? 'Fetching location...'
+                              : 'Use Current Location',
+                        ),
+                      ),
+                      Text(
+                        hasFetchedCoords
+                            ? 'Location captured. You can submit the return request.'
+                            : 'Tap "Use Current Location" to capture coordinates and enable the return request.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ] else ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Text(
+                          'Return will be processed at the same parking location.',
+                          style: TextStyle(
+                            color: Colors.blue.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(12),
@@ -648,150 +735,359 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.blue.shade200),
                       ),
-                      child: Text(
-                        'Return will be processed at the same parking location.',
-                        style: TextStyle(
-                          color: Colors.blue.shade700,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Parked duration: $parkedMinutes minutes'),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${isSelfParking ? 'Additional payment' : 'Return charge'}: Rs $amount',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          if (!isSelfParking && extraPerHour != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'Extra after 30 mins: Rs $extraPerHour per hour'
+                                '${extraHours != null ? ' (extra hours: $extraHours)' : ''}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          if (isSelfParking && extraPerHour != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'Extra after 30 mins: Rs $extraPerHour per hour'
+                                '${extraHours != null ? ' (extra hours: $extraHours)' : ''}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          if (isSelfParking && totalPaid != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'Total paid so far: Rs $totalPaid',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          if (isSelfParking && amount == 0)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'No extra payment required within 30 minutes.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 10),
-                  ],
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.shade200),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Parked duration: $parkedMinutes minutes'),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${isSelfParking ? 'Additional payment' : 'Return charge'}: Rs $amount',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                    if (amount > 0) ...[
+                      const Text(
+                        'Choose payment method',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      ...['debitcard', 'credit card', 'gpay'].map((method) {
+                        return RadioListTile<String>(
+                          value: method,
+                          groupValue: paymentMethod,
+                          onChanged: (value) {
+                            if (value == null) return;
+                            modalSetState(() => paymentMethod = value);
+                          },
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(method),
+                        );
+                      }).toList(),
+                      const SizedBox(height: 10),
+                    ],
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: !canSubmit
+                            ? null
+                            : () async {
+                                if (_isSubmittingReturnRequest ||
+                                    isFetchingLocation ||
+                                    (!isSelfParking && !hasFetchedCoords)) {
+                                  if (!isSelfParking && !hasFetchedCoords) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                            'Please tap "Use Current Location" to fetch coordinates.'),
+                                      ),
+                                    );
+                                  }
+                                  return;
+                                }
+                                final desiredText = isSelfParking
+                                    ? _getUserParkingLocationName()
+                                    : locationController.text.trim();
+                                if (!isSelfParking && desiredText.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                          'Please enter desired return location'),
+                                    ),
+                                  );
+                                  return;
+                                }
+                                Navigator.pop(context);
+                                await _submitReturnRequest(
+                                  desiredLocation: desiredText,
+                                  desiredLatitude: isSelfParking
+                                      ? null
+                                      : double.tryParse(
+                                          latController.text.trim()),
+                                  desiredLongitude: isSelfParking
+                                      ? null
+                                      : double.tryParse(
+                                          lngController.text.trim()),
+                                  paymentMethod: amount > 0 ? paymentMethod : null,
+                                  paymentAmount: amount > 0 ? amount : null,
+                                );
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
                         ),
-                        if (!isSelfParking && extraPerHour != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'Extra after 30 mins: Rs $extraPerHour per hour'
-                              '${extraHours != null ? ' (extra hours: $extraHours)' : ''}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        if (isSelfParking && extraPerHour != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'Extra after 30 mins: Rs $extraPerHour per hour'
-                              '${extraHours != null ? ' (extra hours: $extraHours)' : ''}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        if (isSelfParking && totalPaid != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'Total paid so far: Rs $totalPaid',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        if (isSelfParking && amount == 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'No extra payment required within 30 minutes.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                      ],
+                        child: Text(
+                          amount > 0
+                              ? 'Pay Rs $amount & Request Return'
+                              : 'Request Return',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _cancelSelfParkingBooking() async {
+    if (_userBookingToken == null || _userBookingToken!.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active booking found to cancel')),
+      );
+      return;
+    }
+
+    final shouldCancel = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel Booking'),
+        content: const Text(
+          'Do you want to cancel this booking? The slot will become available again.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('No'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Yes, Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldCancel != true) return;
+
+    setState(() {
+      _isCancellingBooking = true;
+    });
+
+    try {
+      final jwt = AuthTokenStore().token;
+      final url = Uri.parse(
+          '$apiBase/api/bookings/${Uri.encodeComponent(_userBookingToken!)}/cancel-self');
+      final response = await http.post(
+        url,
+        headers: {
+          'Content-Type': 'application/json',
+          if (jwt != null && jwt.isNotEmpty) 'Authorization': 'Bearer $jwt',
+        },
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final message = (data['message'] ?? '').toString().trim();
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              message.isNotEmpty
+                  ? message
+                  : 'Booking cancelled successfully. Slot is now available.',
+            ),
+          ),
+        );
+        await _loadAllParkingData();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_extractApiError(response))),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to cancel booking: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCancellingBooking = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showUserSlotSheet() async {
+    if (_isParkingConfirmed) {
+      await _showReturnRequestSheet();
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(24),
+            topRight: Radius.circular(24),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Your Booked Slot',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey.shade800,
                     ),
                   ),
-                  const SizedBox(height: 10),
-                  if (amount > 0) ...[
-                    const Text(
-                      'Choose payment method',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    ...['debitcard', 'credit card', 'gpay'].map((method) {
-                      return RadioListTile<String>(
-                        value: method,
-                        groupValue: paymentMethod,
-                        onChanged: (value) {
-                          if (value == null) return;
-                          modalSetState(() => paymentMethod = value);
-                        },
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(method),
-                      );
-                    }).toList(),
-                    const SizedBox(height: 10),
-                  ],
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: () async {
-                        if (_isSubmittingReturnRequest) return;
-                        final desiredText = isSelfParking
-                            ? _getUserParkingLocationName()
-                            : locationController.text.trim();
-                        if (!isSelfParking && desiredText.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content:
-                                  Text('Please enter desired return location'),
-                            ),
-                          );
-                          return;
-                        }
-                        Navigator.pop(context);
-                        await _submitReturnRequest(
-                          desiredLocation: desiredText,
-                          desiredLatitude:
-                              isSelfParking ? null : double.tryParse(latController.text.trim()),
-                          desiredLongitude:
-                              isSelfParking ? null : double.tryParse(lngController.text.trim()),
-                          paymentMethod: amount > 0 ? paymentMethod : null,
-                          paymentAmount: amount > 0 ? amount : null,
-                        );
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue.shade600,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                      child: Text(
-                        amount > 0
-                            ? 'Pay Rs $amount & Request Return'
-                            : 'Request Return',
-                      ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: Icon(
+                      Icons.close,
+                      color: Colors.grey.shade600,
+                      size: 24,
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.shade200),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Slot',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                    Text(
+                      _userSlotNumber ?? 'N/A',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                _isSelfParkingBooking
+                    ? 'Security has not confirmed parking yet. You can cancel this self-park booking if needed.'
+                    : 'Parking is not confirmed yet. Please wait for the driver to complete parking.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        side: BorderSide(color: Colors.grey.shade400),
+                      ),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                  if (_isSelfParkingBooking) ...[
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: _isCancellingBooking
+                            ? null
+                            : _cancelSelfParkingBooking,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: Text(
+                          _isCancellingBooking
+                              ? 'Cancelling...'
+                              : 'Cancel Booking',
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -945,7 +1241,6 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
           foregroundColor: Colors.white,
           elevation: 0,
         ),
-        drawer: const CustomDrawer(),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -958,7 +1253,6 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
           foregroundColor: Colors.white,
           elevation: 0,
         ),
-        drawer: const CustomDrawer(),
         body: Center(
           child: Text(
             _errorMessage!,
@@ -977,7 +1271,6 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
           foregroundColor: Colors.white,
           elevation: 0,
         ),
-        drawer: const CustomDrawer(),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -1068,7 +1361,9 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
       );
     }
 
-    if ((_returnStatus ?? '').toLowerCase() == 'released') {
+    final returnStatus = (_returnStatus ?? '').toLowerCase();
+    if (returnStatus == 'released' || returnStatus == 'handover_confirmed') {
+      final driverConfirmedHandover = returnStatus == 'handover_confirmed';
       return Scaffold(
         appBar: AppBar(
           title: const Text('Track Vehicle'),
@@ -1082,7 +1377,6 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
             ),
           ],
         ),
-        drawer: const CustomDrawer(),
         body: SafeArea(
           child: SingleChildScrollView(
             child: Padding(
@@ -1096,7 +1390,9 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Vehicle Is On The Way',
+                    driverConfirmedHandover
+                        ? 'Confirm Vehicle Received'
+                        : 'Vehicle Is On The Way',
                     style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -1105,7 +1401,9 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Security confirmed handover to driver. Please confirm once you receive your vehicle.',
+                    driverConfirmedHandover
+                        ? 'Driver verified your booking token and confirmed handover. Please confirm after receiving your vehicle.'
+                        : 'Security confirmed handover to driver. Waiting for the driver to verify your booking token during handover.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 14,
@@ -1117,24 +1415,44 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
                   const SizedBox(height: 12),
                   _buildReturnHandoverCard(),
                   const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _isConfirmingReturnCompletion
-                          ? null
-                          : _confirmReturnCompleted,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue.shade600,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 12),
+                  if (driverConfirmedHandover)
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _isConfirmingReturnCompletion
+                            ? null
+                            : _confirmReturnCompleted,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue.shade600,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: Text(
+                          _isConfirmingReturnCompletion
+                              ? 'Confirming...'
+                              : 'Confirm Return Completed',
+                        ),
+                      ),
+                    )
+                  else
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.amber.shade200),
                       ),
                       child: Text(
-                        _isConfirmingReturnCompletion
-                            ? 'Confirming...'
-                            : 'Confirm Return Completed',
+                        'Show your booking token to the driver. The final confirm button will appear after driver verification.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.amber.shade800,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -1506,7 +1824,7 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
   }
 
   Widget _buildParkingSlot(Map<String, dynamic> slot) {
-    final canRequestReturn = slot['isUserCar'] == true;
+    final isUserSlot = slot['isUserSlot'] == true;
     return Container(
       height: 60,
       decoration: BoxDecoration(
@@ -1524,7 +1842,7 @@ class _TrackValetScreenState extends State<TrackValetScreen> {
       ),
       child: Center(
         child: InkWell(
-          onTap: canRequestReturn ? _showReturnRequestSheet : null,
+          onTap: isUserSlot ? _showUserSlotSheet : null,
           borderRadius: BorderRadius.circular(8),
           child: SizedBox.expand(
             child: Center(

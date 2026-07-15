@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
 import 'driver_parking_selection_screen.dart';
 import 'login_screen.dart';
+import '../core/config.dart';
 import '../core/utils/auth_token_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -34,6 +37,7 @@ class _DriverCurrentRequestScreenState
   late Set<Marker> _markers;
   late Set<Polyline> _polylines;
   StreamSubscription<Position>? _positionSub;
+  bool _isConfirmingHandover = false;
 
   double? _toDouble(dynamic value) {
     if (value is double) return value;
@@ -267,6 +271,100 @@ class _DriverCurrentRequestScreenState
       (widget.request['requestType'] ?? '').toString().toLowerCase() ==
       'return';
 
+  String _extractErrorMessage(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        final message = decoded['message']?.toString();
+        if (message != null && message.isNotEmpty) return message;
+        final error = decoded['error']?.toString();
+        if (error != null && error.isNotEmpty) return error;
+      }
+    } catch (_) {}
+    return 'Request failed (${response.statusCode})';
+  }
+
+  Future<void> _confirmReturnHandoverWithToken() async {
+    final controller = TextEditingController();
+    final enteredToken = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Handover'),
+        content: TextField(
+          controller: controller,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(
+            labelText: 'Booking Token',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+
+    if (enteredToken == null || enteredToken.trim().isEmpty) return;
+
+    setState(() {
+      _isConfirmingHandover = true;
+    });
+
+    try {
+      final jwtToken = AuthTokenStore().token;
+      final bookingToken = widget.request['id'].toString();
+      final response = await http.post(
+        Uri.parse(
+            '$apiBase/api/bookings/${Uri.encodeComponent(bookingToken)}/confirm-driver-handover'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (jwtToken != null && jwtToken.isNotEmpty)
+            'Authorization': 'Bearer $jwtToken',
+        },
+        body: jsonEncode({'booking_token': enteredToken.trim()}),
+      );
+
+      if (!mounted) return;
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Handover confirmed. Customer can now confirm receipt.'),
+          ),
+        );
+        widget.onRequestCompleted();
+        Navigator.pop(context);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_extractErrorMessage(response)),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to confirm handover: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isConfirmingHandover = false;
+        });
+      }
+    }
+  }
+
   Future<void> _logout() async {
     final shouldLogout = await showDialog<bool>(
       context: context,
@@ -414,6 +512,8 @@ class _DriverCurrentRequestScreenState
                       _isReturnRequest
                           ? 'Return Request - ${widget.request['customerName']}'
                           : widget.request['customerName'],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -426,6 +526,8 @@ class _DriverCurrentRequestScreenState
                     // Vehicle Info
                     Text(
                       widget.request['vehicleModel'],
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 13,
                         color: Colors.grey.shade600,
@@ -443,39 +545,49 @@ class _DriverCurrentRequestScreenState
                           color: Colors.grey.shade600,
                         ),
                         const SizedBox(width: 6),
-                        Text(
-                          widget.request['time'],
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
+                        Flexible(
+                          flex: 2,
+                          child: Text(
+                            widget.request['time'],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
                           ),
                         ),
-                        const Spacer(),
+                        const SizedBox(width: 12),
                         Icon(
                           Icons.location_on,
                           size: 14,
                           color: Colors.grey.shade600,
                         ),
                         const SizedBox(width: 6),
-                        Text(
-                          _isReturnRequest
-                              ? (widget.request['returnLocationText']
-                                          ?.toString()
-                                          .isNotEmpty ==
-                                      true
-                                  ? widget.request['returnLocationText']
-                                  : 'Return destination')
-                              : (_isParkingDestination
-                                  ? (widget.request['parkingLocationName']
-                                              ?.toString()
-                                              .isNotEmpty ==
-                                          true
-                                      ? widget.request['parkingLocationName']
-                                      : 'Parking location')
-                                  : widget.request['parkingLocation']),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade600,
+                        Flexible(
+                          flex: 3,
+                          child: Text(
+                            _isReturnRequest
+                                ? (widget.request['returnLocationText']
+                                            ?.toString()
+                                            .isNotEmpty ==
+                                        true
+                                    ? widget.request['returnLocationText']
+                                    : 'Return destination')
+                                : (_isParkingDestination
+                                    ? (widget.request['parkingLocationName']
+                                                ?.toString()
+                                                .isNotEmpty ==
+                                            true
+                                        ? widget.request['parkingLocationName']
+                                        : 'Parking location')
+                                    : widget.request['parkingLocation']),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
                           ),
                         ),
                       ],
@@ -581,13 +693,17 @@ class _DriverCurrentRequestScreenState
               ),
             ),
 
-            if (widget.showPickupAction)
+            if (widget.showPickupAction || _isReturnRequest)
               Padding(
                 padding: const EdgeInsets.all(16),
                 child: SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _onPickedUp,
+                    onPressed: _isReturnRequest
+                        ? (_isConfirmingHandover
+                            ? null
+                            : _confirmReturnHandoverWithToken)
+                        : _onPickedUp,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.blue.shade600,
                       padding: const EdgeInsets.symmetric(vertical: 14),
@@ -596,9 +712,11 @@ class _DriverCurrentRequestScreenState
                       ),
                     ),
                     child: Text(
-                      widget.request['requestType'] == 'pickup'
-                          ? 'Pickup Vehicle'
-                          : 'Retrieved',
+                      _isReturnRequest
+                          ? (_isConfirmingHandover
+                              ? 'Confirming...'
+                              : 'Confirm Handover')
+                          : 'Pickup Vehicle',
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,

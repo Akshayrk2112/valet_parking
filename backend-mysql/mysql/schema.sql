@@ -23,6 +23,7 @@ CREATE TABLE driver_details (
 -- Security-specific details (add fields as needed)
 CREATE TABLE security_details (
     user_id INT PRIMARY KEY,
+    parking_location_id INT,
     parking_location VARCHAR(255),
     status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
     phone VARCHAR(20),
@@ -71,7 +72,6 @@ CREATE TABLE bookings (
     customer_longitude DECIMAL(11,8),
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (driver_id) REFERENCES users(id),
-    FOREIGN KEY (return_driver_id) REFERENCES users(id),
     FOREIGN KEY (location_id) REFERENCES parking_locations(id)
 );
 

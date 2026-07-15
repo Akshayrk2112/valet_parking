@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -58,12 +59,12 @@ class _BookValetScreenState extends State<BookValetScreen> {
   }
 
   void _validateForm() {
+    final vehicleFieldsValid =
+        validateVehicleModel(_vehicleNameController.text) == null &&
+            validateVehicleNumber(_vehicleNumberController.text) == null;
+    final locationFieldValid = _locationShared;
+
     setState(() {
-      bool vehicleFieldsValid = _vehicleNameController.text.isNotEmpty &&
-          _vehicleNumberController.text.isNotEmpty;
-
-      bool locationFieldValid = _locationShared;
-
       _isFormValid = vehicleFieldsValid && locationFieldValid;
     });
   }
@@ -116,8 +117,8 @@ class _BookValetScreenState extends State<BookValetScreen> {
       _locationController.text =
           'Lat: ${_currentLocation!.latitude.toStringAsFixed(6)}, Lng: ${_currentLocation!.longitude.toStringAsFixed(6)}';
       _locationShared = true;
-      _validateForm();
     });
+    _validateForm();
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -153,6 +154,7 @@ class _BookValetScreenState extends State<BookValetScreen> {
     }
 
     final bookingTime = DateTime.now().toIso8601String();
+    final vehicleNumber = normalizeVehicleNumber(_vehicleNumberController.text);
     final url = Uri.parse('$apiBase/api/bookings');
     final response = await http.post(
       url,
@@ -162,8 +164,8 @@ class _BookValetScreenState extends State<BookValetScreen> {
           'Authorization': 'Bearer $_jwtToken',
       },
       body: jsonEncode({
-        'vehicle_number': _vehicleNumberController.text,
-        'vehicle_type': _vehicleNameController.text,
+        'vehicle_number': vehicleNumber,
+        'vehicle_type': _vehicleNameController.text.trim(),
         'booking_time': bookingTime,
         'customer_latitude': _currentLocation?.latitude,
         'customer_longitude': _currentLocation?.longitude,
@@ -206,7 +208,7 @@ class _BookValetScreenState extends State<BookValetScreen> {
           builder: (context) => ValetBookingConfirmedScreen(
             bookingId: bookingId,
             vehicleName: _vehicleNameController.text.trim(),
-            vehicleNumber: _vehicleNumberController.text.trim(),
+            vehicleNumber: vehicleNumber,
             pickupTime: pickupTime,
             bookingTime: parsedBookingTime,
             pickupLocation: _locationController.text.trim(),
@@ -302,9 +304,15 @@ class _BookValetScreenState extends State<BookValetScreen> {
                       const SizedBox(height: 8),
                       TextFormField(
                         controller: _vehicleNumberController,
+                        textCapitalization: TextCapitalization.characters,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[a-zA-Z0-9 \-]'),
+                          ),
+                        ],
                         validator: validateVehicleNumber,
                         decoration: _buildInputDecoration(
-                          hintText: 'Enter vehicle number',
+                          hintText: 'KL58AH9653',
                           prefixIcon: Icons.confirmation_number,
                         ),
                       ),
